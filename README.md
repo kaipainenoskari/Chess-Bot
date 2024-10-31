@@ -1,3 +1,7 @@
+# This project has been merged from SebLague/Chess-Challenge
+My Bot can be found in Chess-Challenge/src/My Bot/MyBot.cs
+Below is the original README.md from SebLague/Chess-Challenge
+
 # Chess Coding Challenge (C#)
 Welcome to the [chess coding challenge](https://youtu.be/iScy18pVR58)! This is a friendly competition in which your goal is to create a small chess bot (in C#) using the framework provided in this repository.
 Once submissions close, these bots will battle it out to discover which bot is best!
