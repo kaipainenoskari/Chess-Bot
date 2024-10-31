@@ -1,5 +1,6 @@
 # This project has been merged from SebLague/Chess-Challenge
 My Bot can be found in Chess-Challenge/src/My Bot/MyBot.cs
+
 Below is the original README.md from SebLague/Chess-Challenge
 
 # Chess Coding Challenge (C#)
