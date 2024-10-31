@@ -1,188 +1,260 @@
 using ChessChallenge.API;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace ChessChallenge.Example
 {
-    // A simple bot that can spot mate in one, and always captures the most valuable piece it can.
-    // Plays randomly otherwise.
     public class EvilBot : IChessBot
     {
-        private int GetPieceValue(PieceType pieceType)
+        // Piece values: null, pawn, knight, bishop, rook, queen, king
+        int[] pieceValues = { 0, 100, 300, 300, 500, 900, 10000 };
+
+        List<int[]> pieceAdjustments;
+
+        bool isWhite;
+        Move moveToPlay;
+        int depth;
+        Board boardRef;
+        Timer timerRef;
+        int maxTime;
+
+        //Chess Piece Square Tables Bit Keys
+        //Instead of using a 2D array, we can use 2 ulongs to represent a mirrored table
+        //(0000) (-50)
+        //(0001) (-40)
+        //(0010) (-30)
+        //(0011) (-20)
+        //(0100) (-10)
+        //(0101) (-5)
+        //(0110) (0)
+        //(0111) (5)
+        //(1000) (10)
+        //(1001) (15)
+        //(1010) (20)
+        //(1011) (25)
+        //(1100) (30)
+        //(1101) (40)
+        //(1110) (50)
+        //Not using negatives here saves like 5 tokens (just subtract 50 when using)
+        int[] adjustmentValues = { 0, 10, 20, 30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100 };
+
+        int evaluateVisits = 0;
+        //Create Piece Square Adjustment Table on Initialization
+        public EvilBot()
         {
-            return pieceType switch
-            {
-                PieceType.Pawn => 100,
-                PieceType.Knight => 320,
-                PieceType.Bishop => 350,
-                PieceType.Rook => 500,
-                PieceType.Queen => 900,
-                PieceType.King => 20000,
-                _ => 0
+            pieceAdjustments = new List<int[]>(){new int[]{0}, //Blank
+            GetPieceAdjustments(new ulong[] {13292315514680272486, 7378647193648342630}),   //Pawn
+            GetPieceAdjustments(new ulong[] {12205485488516178448, 2454591752300046690}),   //Knight
+            GetPieceAdjustments(new ulong[] {9760575157703033923, 4918887868711340132}),    //Bishop
+            GetPieceAdjustments(new ulong[] {7378416150784730726, 8531619129795634789}),    //Rook
+            GetPieceAdjustments(new ulong[] {8603413936259486787, 6071810403824072550}),    //Queen
+            GetPieceAdjustments(new ulong[] {77125320457715986, 7550960606429581859}),      //King
+            GetPieceAdjustments(new ulong[] {15871470423304712720, 2459077696152591426})    //King Endgame
             };
         }
 
-        private int GetMoveScore(Move move, Board board)
+        int[] GetPieceAdjustments(ulong[] rows)
         {
-            int score = 0;
-
-            // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
-            if (move.IsCapture)
-            {
-                int victimValue = GetPieceValue(move.CapturePieceType);
-                int attackerValue = GetPieceValue(move.MovePieceType);
-                score += (victimValue * 10) - attackerValue;
-            }
-
-            // Promotions
-            if (move.IsPromotion)
-            {
-                int promotionValue = GetPieceValue(move.PromotionPieceType);
-                score += promotionValue * 10;
-            }
-
-            // Checks
-            board.MakeMove(move);
-            if (board.IsInCheck())
-            {
-                score += 10000; // Arbitrary high value to prioritize checks
-            }
-            board.UndoMove(move);
-
-            return score;
-        }
-
-        private Move[] OrderMoves(Move[] moves, Board board)
-        {
-            //return moves;
-            return moves.OrderByDescending(move => GetMoveScore(move, board)).ToArray();
-        }
-
-        private static int GetScore(Board board)
-        {
-            if (board.IsInCheckmate())
-            {
-                return board.IsWhiteToMove ? int.MinValue : int.MaxValue;
-            }
-            if (board.IsInStalemate())
-            {
-                return 0;
-            }
-            int score = 0;
-            PieceList[] allPieces = board.GetAllPieceLists();
-
-            for (int i = 0; i < allPieces.Length; i++)
-            {
-                int multiplier = (i < 6) ? 1 : -1;
-                foreach(Piece piece in allPieces[i])
-                {
-                    score += multiplier * piece.PieceType switch
-                    {
-                        PieceType.Pawn => 100,
-                        PieceType.Knight => 320,
-                        PieceType.Bishop => 330,
-                        PieceType.Rook => 500,
-                        PieceType.Queen => 900,
-                        PieceType.King => 20000,
-                        _ => 0
-                    };
-                }
-            }
-            return score;
-        }
-
-        private (Move, int) AlphaBeta(Board board, int depth, bool isMaximizingPlayer, int alpha = int.MinValue, int beta = int.MaxValue)
-        {
-            // Base case: if depth is 0, evaluate and return the score of the current board
-            if (depth == 0)
-            {
-                return (board.GetLegalMoves().FirstOrDefault(), GetScore(board));
-            }
-
-            Move[] moves = OrderMoves(board.GetLegalMoves(), board);
-
-            int bestScore = isMaximizingPlayer ? int.MinValue : int.MaxValue;
-            Move bestMove = moves.FirstOrDefault();
-
-            foreach (Move move in moves)
-            {
-                board.MakeMove(move);
-                int score;
-
-                if (board.IsInCheckmate())
-                {
-                    score = isMaximizingPlayer ? int.MaxValue : int.MinValue;
-                }
-                else if (board.IsInStalemate())
-                {
-                    score = 0;
-                }
-                else
-                {
-                    // Recursively call MinMax with alpha-beta pruning, decreasing depth
-                    score = AlphaBeta(board, depth - 1, !isMaximizingPlayer, alpha, beta).Item2;
-                }
-
-                // Update the best score and move based on maximizing or minimizing player
-                if (isMaximizingPlayer)
-                {
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestMove = move;
-                    }
-                    alpha = Math.Max(alpha, bestScore);
-
-                    // Alpha-beta pruning: cut off exploration if the score is already worse than beta
-                    if (beta <= alpha)
-                    {
-                        board.UndoMove(move);
-                        break; // Prune the remaining branches
-                    }
-                }
-                else
-                {
-                    if (score < bestScore)
-                    {
-                        bestScore = score;
-                        bestMove = move;
-                    }
-                    beta = Math.Min(beta, bestScore);
-
-                    // Alpha-beta pruning: cut off exploration if the score is already worse than alpha
-                    if (beta <= alpha)
-                    {
-                        board.UndoMove(move);
-                        break; // Prune the remaining branches
-                    }
-                }
-
-                board.UndoMove(move);
-            }
-
-            return (bestMove, bestScore);
+            int[] adjustments = new int[32];
+            for (int i = 0; i < rows.Length; i++)
+                for (int j = 0; j < 16; j++)
+                    adjustments[i * 16 + j] = adjustmentValues[(int)(((1 << 4) - 1) & (rows[i] >> (4 * j)))] - 50;
+            return adjustments;
         }
 
         public Move Think(Board board, Timer timer)
         {
-            int maxDepth = 5;
-            double timeLimit = timer.MillisecondsRemaining * 0.1 / 20.0;
-            Move bestMove = board.GetLegalMoves().FirstOrDefault();
-            int i = 1;
-            DateTime startTime = DateTime.Now;
-            while (i <= maxDepth)
+            boardRef = board;
+            timerRef = timer;
+            isWhite = boardRef.IsWhiteToMove;
+
+            //As there are less pieces search to higher depths
+            int pieceCount = 0;
+            Array.ForEach(boardRef.GetAllPieceLists(), list => pieceCount += list.Count);
+            depth = pieceCount < 5 ? 7 : pieceCount < 10 ? 6 : 5;
+
+            //With less time on the clock allow less time to search to avoid flagging
+            maxTime = timerRef.MillisecondsRemaining < 10000 ? 750 : timerRef.MillisecondsRemaining < 25000 ? 1000 : 2000;
+            //maxTime = timerRef.MillisecondsRemaining;
+            if (timerRef.MillisecondsRemaining < 5000)
             {
-                (Move move, int score) = AlphaBeta(board, i, board.IsWhiteToMove);
-                bestMove = move;
-                double elapsedTime = (DateTime.Now - startTime).TotalMilliseconds / 1000.0;
-                //Console.WriteLine($"Depth: {i}, Time: {Math.Round(elapsedTime, 2, MidpointRounding.AwayFromZero)}s");
-                if (elapsedTime > timeLimit)
-                {
-                    break;
-                }
-                i++;
+                maxTime = 500;
+                depth = 5;
             }
-            return bestMove;
+
+            int evaluation = Search(depth, -600000, 600000, isWhite ? 1 : -1);
+
+            Console.WriteLine($"Move #{boardRef.PlyCount / 2 + 1} EvilBot evaluated {evaluateVisits} positions");
+            Console.WriteLine($"Evaluation: {evaluation}");
+            if (!boardRef.IsWhiteToMove)
+                Console.WriteLine();
+            //Move[] moves = GetSortedMoves(false);
+            //Console.WriteLine("Moves: " + string.Join(", ", moves.Select(move => move.ToString())));
+            return moveToPlay;
+        }
+
+        //Search Using Negamax Algorithm
+        int Search(int currentDepth, int alpha, int beta, int color)
+        {
+            //Any Searches after the max time are discarded (Most likely found the search early based on move sorting)
+            if (timerRef.MillisecondsElapsedThisTurn > maxTime)
+                return 500000;
+            if (boardRef.IsInCheckmate() || boardRef.IsDraw())
+                return CalculatePosition(color, currentDepth);
+            if (currentDepth == 0)
+                return QuiescenceSearch(alpha, beta, color, currentDepth);
+
+            Move[] moves = GetSortedMoves(false);
+            foreach (Move move in moves)
+            {
+                boardRef.MakeMove(move);
+                int eval = -Search(currentDepth - 1, -beta, -alpha, -color);
+                boardRef.UndoMove(move);
+
+                if (eval >= beta)
+                    return beta;
+                if (eval > alpha)
+                {
+                    alpha = eval;
+                    if (currentDepth == depth)
+                        moveToPlay = move;
+                }
+            }
+            return alpha;
+        }
+
+        //Quiescence Search To Resolve Pieces Under Threat
+        //Maybe look at adding checks
+        int QuiescenceSearch(int alpha, int beta, int color, int currentDepth)
+        {
+            int eval = CalculatePosition(color, currentDepth);
+            if (eval >= beta)
+                return beta;
+            alpha = Math.Max(alpha, eval);
+
+            //Gets only the capture moves
+            Move[] captureMoves = GetSortedMoves(true);
+            foreach (Move capture in captureMoves)
+            {
+                boardRef.MakeMove(capture);
+                eval = -QuiescenceSearch(-beta, -alpha, -color, currentDepth - 1);
+                boardRef.UndoMove(capture);
+
+                if (eval >= beta)
+                    return beta;
+                alpha = Math.Max(alpha, eval);
+            }
+
+            return alpha;
+        }
+
+        Move[] GetSortedMoves(bool capturesOnly)
+        {
+            Move[] moves = boardRef.GetLegalMoves(capturesOnly);
+            int[] scores = new int[moves.Length];
+            int count = 0;
+
+            //Score each move based on multiple factors
+            foreach (Move move in moves)
+            {
+                int scoreGuess = 0;
+                int movePieceType = (int)move.MovePieceType;
+
+                if (move.IsCapture)
+                    scoreGuess = 10 * pieceValues[(int)move.CapturePieceType] - pieceValues[movePieceType];
+
+                if (move.IsPromotion)
+                    scoreGuess += pieceValues[(int)move.PromotionPieceType] - pieceValues[movePieceType];
+
+                scoreGuess += GetSquareValue(move.TargetSquare, boardRef.IsWhiteToMove, GetAdjustmentList(movePieceType));
+                boardRef.MakeMove(move);
+                if (boardRef.IsInCheck())
+                {
+                    scoreGuess += 5000;
+                    if (boardRef.IsInCheckmate())
+                        scoreGuess += 500000;
+                }
+                boardRef.UndoMove(move);
+                scores[count] = scoreGuess;
+                count++;
+            }
+
+            //Reorder list of moves based on the guess scores
+            for (int i = 0; i < moves.Length; i++)
+                for (int j = i + 1; j < moves.Length; j++)
+                    if (scores[i] < scores[j])
+                    {
+                        int tempScore = scores[i];
+                        scores[i] = scores[j];
+                        scores[j] = tempScore;
+
+                        Move tempMove = moves[i];
+                        moves[i] = moves[j];
+                        moves[j] = tempMove;
+                    }
+
+            return moves;
+        }
+
+        //Score the position based on the values of pieces left
+        int CalculatePosition(int color, int currentDepth)
+        {
+            evaluateVisits++;
+            //Adjust by depth value to favor a quicker mate
+            if (boardRef.IsInCheckmate())
+                return -500000 - currentDepth;
+
+            if (boardRef.IsDraw())
+                return 0;
+
+            int score = 0;
+            PieceList[] pieceLists = boardRef.GetAllPieceLists();
+            foreach (PieceList pieceList in pieceLists)
+            {
+                int pieceValue = pieceValues[(int)pieceList.TypeOfPieceInList];
+                int[] adjustmentArray = GetAdjustmentList((int)pieceList.TypeOfPieceInList);
+                foreach (Piece piece in pieceList)
+                {
+                    int value = GetSquareValue(piece.Square, piece.IsWhite, adjustmentArray) + pieceValue;
+                    if (!piece.IsWhite)
+                        value *= -1;
+                    score += value;
+                }
+            }
+
+            return score * color;
+        }
+
+        int[] GetAdjustmentList(int pieceType)
+        {
+            return pieceType == 6 && IsEndGame() ? pieceAdjustments[7] : pieceAdjustments[pieceType];
+        }
+
+        //Adjustment values for piece based on the square it is on
+        int GetSquareValue(Square square, bool isWhite, int[] adjustmentArray)
+        {
+            int file = square.File;
+            int rank = square.Rank;
+            rank = isWhite ? 7 - rank : rank;
+            if (file > 3)
+                file = 7 - file;
+            return adjustmentArray[rank * 4 + file];
+        }
+
+        //Endgame if No Queens or 1 Queen and 1 Minor Piece
+        bool IsEndGame()
+        {
+            bool[] sides = { true, false };
+            var GetPieces = boardRef.GetPieceList;
+            foreach (bool side in sides)
+            {
+                int queenCount = GetPieces(PieceType.Queen, side).Count;
+                int minorPieceCount = GetPieces(PieceType.Rook, side).Count + GetPieces(PieceType.Bishop, side).Count + GetPieces(PieceType.Knight, side).Count;
+                if ((queenCount == 0 && minorPieceCount > 2) || (queenCount == 1 && minorPieceCount > 1))
+                    return false;
+            }
+            return true;
         }
     }
 }
