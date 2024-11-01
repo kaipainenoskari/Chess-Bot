@@ -1,10 +1,28 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.NetworkInformation;
 using ChessChallenge.API;
 
 public class MyBot : IChessBot
 {
+    public struct Killers
+	{
+		public Move moveA;
+		public Move moveB;
+
+		public void Add(Move move)
+		{
+			if (move != moveA)
+			{
+				moveB = moveA;
+				moveA = move;
+			}
+		}
+
+		public bool Match(Move move) => move == moveA || move == moveB;
+
+	}
     List<int[,]> middlegamePieceSquareTable;
     List<int[,]> endgamePieceSquareTable;
     int[] middlegamePieceValues = { 0, 82, 337, 365, 477, 1025, 20000 };
@@ -16,6 +34,9 @@ public class MyBot : IChessBot
     int LMR_THRESHOLD = 4;
     int REDUCTION_LIMIT = 3;
     int LMR_REDUCTION = 1;
+    int MaxExtensions = 12;
+    Killers[] killerMoves;
+    int maxKillerMovePly = 32;
     Board boardRef;
     Timer timerRef;
     int maxTime;
@@ -181,8 +202,9 @@ public class MyBot : IChessBot
             maxTime = 500;
             depth = 4;
         }
+        killerMoves = new Killers[maxKillerMovePly];
 
-        int evaluation = NegaMax(depth, isWhite ? 1 : -1, -600000, 600000);
+        int evaluation = NegaMax(depth, 0, isWhite ? 1 : -1, -600000, 600000);
 
         Console.WriteLine($"Move #{boardRef.PlyCount / 2 + 1} MyBot   evaluated {evaluateVisits} positions");
         Console.WriteLine("Evaluation: " + evaluation);
@@ -192,7 +214,7 @@ public class MyBot : IChessBot
         //Console.WriteLine("Moves: " + string.Join(", ", moves.Select(move => move.ToString())));
         return moveToPlay;
     }
-    int NegaMax(int currentDepth, int color, int alpha, int beta)
+    int NegaMax(int currentDepth, int plyFromRoot, int color, int alpha, int beta)
     {
         if (timerRef.MillisecondsElapsedThisTurn > maxTime)
             return 500000;
@@ -203,40 +225,46 @@ public class MyBot : IChessBot
 
         if (currentDepth > R && boardRef.TrySkipTurn())
         {
-            int nullMoveScore = -NegaMax(currentDepth - R - 1, -color, -beta, -beta + 1);
+            int nullMoveScore = -NegaMax(currentDepth - R - 1, plyFromRoot + 1, -color, -beta, -beta + 1);
             boardRef.UndoSkipTurn();
             if (nullMoveScore >= beta)
                 return beta;
         }
 
-        Move[] moves = OrderMoves(false);
+        Move[] moves = OrderMoves(plyFromRoot, false);
  
         for (int i = 0; i < moves.Length; i++)
         {
             Move move = moves[i];
 
             boardRef.MakeMove(move);
+            int extension = CalculateExtensionDepth(move, currentDepth);
             int score;
             if (i == 0)
-                score = -NegaMax(currentDepth - 1, -color, -beta, -alpha);
+                score = -NegaMax(currentDepth - 1 + extension, plyFromRoot + 1, -color, -beta, -alpha);
             else
             {
                 bool okToReduce = !move.IsCapture && !move.IsPromotion && !boardRef.IsInCheck();
                 if (i >= LMR_THRESHOLD && currentDepth >= REDUCTION_LIMIT && okToReduce)
-                    score = -NegaMax(currentDepth - 1 - LMR_REDUCTION, -color, -alpha - 1, -alpha);
+                    score = -NegaMax(currentDepth - 1 - LMR_REDUCTION, plyFromRoot + 1, -color, -alpha - 1, -alpha);
                 else score = alpha + 1;
 
                 if (score > alpha)
                 {
-                    score = -NegaMax(currentDepth - 1, -color, -alpha - 1, -alpha);
+                    score = -NegaMax(currentDepth - 1 + extension, plyFromRoot + 1, -color, -alpha - 1, -alpha);
                     if (score > alpha && score < beta)
-                        score = -NegaMax(currentDepth - 1, -color, -beta, -alpha);
+                        score = -NegaMax(currentDepth - 1 + extension, plyFromRoot, -color, -beta, -alpha);
                 }
             }
             boardRef.UndoMove(move);
             
             if (score >= beta)
+            {
+                if (!move.IsCapture && !move.IsPromotion && plyFromRoot < maxKillerMovePly)
+                    killerMoves[plyFromRoot].Add(move);
+                //return score;
                 return beta;
+            }
             if (score > alpha)
             {
                 alpha = score;
@@ -252,31 +280,20 @@ public class MyBot : IChessBot
         int standPat = Evaluate(color, currentDepth);
         if (standPat >= beta)
             return beta;
-        if (alpha < standPat)
+        if (standPat > alpha)
             alpha = standPat;
 
-        /*
-        List<Move> moveList = OrderMoves(capturesOnly: true).ToList();
-        Move[] allMoves = boardRef.GetLegalMoves();
-        foreach (Move move in allMoves)
+        Move[] moves = OrderMoves(0, true);
+        for (int i = 0; i < moves.Length; i++)
         {
-            boardRef.MakeMove(move);
-            if (boardRef.IsInCheck())
-                moveList.Insert(0, move);
-            boardRef.UndoMove(move);
-        }
-        Move[] moves = moveList.ToArray();
-        */
-        Move[] moves = OrderMoves(true);
-        foreach (Move move in moves)
-        {
+            Move move = moves[i];
             boardRef.MakeMove(move);
             standPat = -QuiescenceSearch(currentDepth - 1, -color, -beta, -alpha);
             boardRef.UndoMove(move);
 
             if (standPat >= beta)
                 return beta;
-            if (alpha < standPat)
+            if (standPat > alpha)
                 alpha = standPat;
         }
 
@@ -294,10 +311,12 @@ public class MyBot : IChessBot
         int score = 0;
         PieceList[] allPieceLists = boardRef.GetAllPieceLists();
 
+        bool isEndGame = IsEndGame();
+
         foreach (PieceList pieceList in allPieceLists)
         {
             int pieceValue;
-            if (IsEndGame())
+            if (isEndGame)
                 pieceValue = endgamePieceValues[(int)pieceList.TypeOfPieceInList];
             else pieceValue = middlegamePieceValues[(int)pieceList.TypeOfPieceInList];
             foreach(Piece piece in pieceList)
@@ -310,6 +329,22 @@ public class MyBot : IChessBot
         }
         int mobilityBonus = boardRef.GetLegalMoves().Length;
         score += mobilityBonus;
+
+        Square whiteKingSquare = boardRef.GetKingSquare(true);
+        Square blackKingSquare = boardRef.GetKingSquare(false);
+
+        // Uncastled king penalty
+        if (!isEndGame)
+        {
+            bool whiteKingFileCheck = (whiteKingSquare.File <= 2) || (whiteKingSquare.File >= 5);
+            bool whiteKingRankCheck = whiteKingSquare.Rank == 0;
+
+            bool blackKingFileCheck = (blackKingSquare.File <= 2) || (blackKingSquare.File >= 5);
+            bool blackKingRankCheck = blackKingSquare.Rank == 7;
+
+            score -= (!whiteKingRankCheck || !whiteKingFileCheck) ? 50 : 0;
+            score += (!blackKingRankCheck || !blackKingFileCheck) ? 50 : 0;
+        }
 
         //Prioritize attacking
         //int attackBonus = (boardRef.IsWhiteToMove ? 1 : -1) * boardRef.GetLegalMoves(capturesOnly: true).Length * 30;
@@ -330,7 +365,7 @@ public class MyBot : IChessBot
         }
         return true;
     }
-    int GetMoveScore(Move move)
+    int GetMoveScore(Move move, bool inQSearch, int ply)
     {
         int score = 0;
         bool isEndGame = IsEndGame();
@@ -354,6 +389,8 @@ public class MyBot : IChessBot
             int movedPieceValue = isEndGame ? endgamePieceValues[movePieceType] : middlegamePieceValues[movePieceType];
             score += promotionPieceValue - movedPieceValue;
         }
+        if (!move.IsCapture && !inQSearch && ply < maxKillerMovePly && killerMoves[ply].Match(move))
+            score += 100000;
         // Piece square tables, prioritize moving to better squares
         score += GetPieceSquareValue(move.MovePieceType, boardRef.IsWhiteToMove, move.TargetSquare);
         score -= GetPieceSquareValue(move.MovePieceType, boardRef.IsWhiteToMove, move.StartSquare);
@@ -372,12 +409,12 @@ public class MyBot : IChessBot
 
         return score;
     }
-    Move[] OrderMoves(bool capturesOnly)
+    Move[] OrderMoves(int ply, bool inQSearch)
     {
-        Move[] moves = boardRef.GetLegalMoves(capturesOnly);
+        Move[] moves = boardRef.GetLegalMoves(inQSearch);
         int[] scores = new int[moves.Length];
         for (int i = 0; i < moves.Length; i++)
-            scores[i] = GetMoveScore(moves[i]);
+            scores[i] = GetMoveScore(moves[i], inQSearch, ply);
         
         //Reorder list of moves based on the guess scores
         for (int i = 0; i < moves.Length; i++)
@@ -403,5 +440,18 @@ public class MyBot : IChessBot
         if (IsEndGame())
             return endgamePieceSquareTable[(int)pieceType][rank, file];
         else return middlegamePieceSquareTable[(int)pieceType][rank, file];
+    }
+
+    int CalculateExtensionDepth(Move move, int numExtensions)
+    {
+        return 0;
+        if (numExtensions < MaxExtensions)
+        {
+            if (boardRef.IsInCheck())
+                return 1;
+            if (move.IsPromotion)
+                return 1;
+        }
+        return 0;
     }
 }
